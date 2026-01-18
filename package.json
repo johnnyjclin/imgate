@@ -1,0 +1,23 @@
+{
+  "name": "imgate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo for smart contracts and web app",
+  "scripts": {
+    "dev": "pnpm --filter nextjs dev",
+    "dev:hardhat": "pnpm --filter hardhat hardhat node",
+    "build": "pnpm --filter nextjs build",
+    "build:contracts": "pnpm --filter hardhat compile",
+    "test": "pnpm --filter hardhat test",
+    "test:nextjs": "pnpm --filter nextjs test",
+    "deploy": "pnpm --filter hardhat deploy",
+    "lint": "pnpm --filter nextjs lint",
+    "clean": "pnpm -r clean && rm -rf node_modules",
+    "install:all": "pnpm install"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0"
+}
