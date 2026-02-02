@@ -1,13 +1,16 @@
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
 // Base Sepolia USDC contract address
-const USDC_ADDRESS = "0x5dEaC602762362FE5f135FA5904351916053cF70";
+const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 const ImgateLicenseModule = buildModule("ImgateLicenseModule", (m) => {
-  // Get platform fee recipient from parameters or use deployer
+  // Get deployer account to use as default platform fee recipient
+  const deployer = m.getAccount(0);
+  
+  // Get platform fee recipient from parameters or use deployer address
   const platformFeeRecipient = m.getParameter(
     "platformFeeRecipient",
-    "0x0000000000000000000000000000000000000000" // Will be replaced with deployer
+    deployer
   );
 
   const usdc = m.getParameter("usdc", USDC_ADDRESS);

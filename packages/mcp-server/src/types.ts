@@ -17,6 +17,10 @@ export interface Asset {
   c2paSigningTime?: string;
   c2paClaims?: any;
   createdAt: number;
+  creatorName?: string;
+  twitterHandle?: string;
+  creatorBio?: string;
+  description?: string;
 }
 
 /**
@@ -43,6 +47,8 @@ export interface ServerConfig {
   rpcUrl?: string;
   contractAddress?: string;
   usdcAddress?: string;
+  cdpApiKeyName?: string;
+  cdpApiKeyPrivateKey?: string;
 }
 
 /**

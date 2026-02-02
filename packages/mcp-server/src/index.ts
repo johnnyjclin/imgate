@@ -1,5 +1,15 @@
 #!/usr/bin/env node
 
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Load environment variables from .env file relative to this script
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const envPath = path.resolve(__dirname, '../.env'); // Assumes dist/index.js -> .env in root
+dotenv.config({ path: envPath });
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -14,6 +24,9 @@ import { readAsset, readAssetTool, ReadAssetSchema } from './tools/read-asset.js
 import { parseC2PA, parseC2PATool, ParseC2PASchema } from './tools/parse-c2pa.js';
 import { verifyPurchase, verifyPurchaseTool, VerifyPurchaseSchema } from './tools/verify-purchase.js';
 import { generatePaymentLink, generatePaymentLinkTool, GeneratePaymentLinkSchema } from './tools/generate-payment-link.js';
+import { searchAssets, searchAssetsTool, SearchAssetsSchema } from './tools/search-assets.js';
+import { agentPay, agentPayTool, AgentPaySchema } from './tools/agent-pay.js';
+import { downloadAsset, downloadAssetTool, DownloadAssetSchema } from './tools/download-asset.js';
 
 /**
  * Imgate MCP Server
@@ -29,6 +42,13 @@ class ImgateMCPServer {
   constructor() {
     this.config = loadConfig();
     
+    // Debug log to stderr (visible in MCP logs)
+    console.error('[Imgate] Config Status:', {
+      hasApiKey: !!this.config.cdpApiKeyName,
+      hasPrivateKey: !!this.config.cdpApiKeyPrivateKey,
+      contract: this.config.contractAddress
+    });
+
     this.server = new Server(
       {
         name: 'imgate-mcp-server',
@@ -49,10 +69,16 @@ class ImgateMCPServer {
     // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
-        readAssetTool,
+        searchAssetsTool, // Renamed to "search" in definition, primary entry point
+        agentPayTool,     // Primary action
+        
+        // Secondary/Utility tools (kept for backward compat or specific needs)
+        readAssetTool,    
         parseC2PATool,
         verifyPurchaseTool,
-        generatePaymentLinkTool
+        generatePaymentLinkTool,
+        // searchAssetsTool, // Replaced by the consolidated search above (using same import)
+        downloadAssetTool,
       ],
     }));
 
@@ -62,6 +88,47 @@ class ImgateMCPServer {
         const { name, arguments: args } = request.params;
 
         switch (name) {
+          case 'search': {
+             const validatedArgs = SearchAssetsSchema.parse(args);
+             const result = await searchAssets(validatedArgs, this.config);
+             return {
+               content: [{ type: 'text', text: result }],
+             };
+          }
+
+          // Legacy mapping
+          case 'search_assets': {
+            const validatedArgs = SearchAssetsSchema.parse(args);
+            const result = await searchAssets(validatedArgs, this.config);
+            return {
+              content: [{ type: 'text', text: result }],
+            };
+          }
+
+          case 'agent_pay': {
+            const validatedArgs = AgentPaySchema.parse(args);
+            const result = await agentPay(validatedArgs, this.config);
+            return {
+              content: [{ type: 'text', text: result }],
+            };
+          }
+
+          case 'search_assets': {
+            const validatedArgs = SearchAssetsSchema.parse(args);
+            const result = await searchAssets(validatedArgs, this.config);
+            return {
+              content: [{ type: 'text', text: result }],
+            };
+          }
+
+          case 'download_asset': {
+            const validatedArgs = DownloadAssetSchema.parse(args);
+            const result = await downloadAsset(validatedArgs, this.config);
+            return {
+              content: [{ type: 'text', text: result }],
+            };
+          }
+
           case 'read_asset': {
             const validatedArgs = ReadAssetSchema.parse(args);
             const result = await readAsset(validatedArgs, this.config);

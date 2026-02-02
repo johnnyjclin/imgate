@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import { WalletButton } from '@/components/WalletButton';
 import { useWallet } from '@/hooks/useWallet';
-import { parseUnits, formatUnits, keccak256, toBytes } from 'viem';
+import { usePublicClient } from 'wagmi';
+import { parseUnits, formatUnits, keccak256, stringToBytes } from 'viem';
 import Link from 'next/link';
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_IMGATE_CONTRACT_ADDRESS as `0x${string}`;
@@ -34,6 +35,7 @@ const ERC20_ABI = [
 
 export function ViewAsset({ slug }: { slug: string }) {
   const { address, isConnected, getWalletClient } = useWallet();
+  const publicClient = usePublicClient();
   const [asset, setAsset] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
@@ -90,7 +92,7 @@ export function ViewAsset({ slug }: { slug: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchaseSuccess, address, asset]);
 
-  const checkAccess = async () => {
+  const checkAccess = async (txHash?: string) => {
     if (!address || !asset) return;
 
     try {
@@ -100,6 +102,7 @@ export function ViewAsset({ slug }: { slug: string }) {
         body: JSON.stringify({
           assetId: asset.assetId,
           payer: address,
+          txHash: txHash // Pass txHash if we just purchased
         }),
       });
 
@@ -111,7 +114,7 @@ export function ViewAsset({ slug }: { slug: string }) {
   };
 
   const handlePurchase = async () => {
-    if (!asset || !address) return;
+    if (!asset || !address || !publicClient) return;
 
     setPurchasing(true);
     setApproveSuccess(false);
@@ -134,40 +137,46 @@ export function ViewAsset({ slug }: { slug: string }) {
 
       setApproveHash(hash);
       console.log('Approval transaction:', hash);
-
-      // Wait a bit for approval
-      setTimeout(async () => {
-        setApproveSuccess(true);
+      
+      // Wait for approval confirmation
+      console.log('Waiting for approval confirmation...');
+      await publicClient.waitForTransactionReceipt({ hash });
+      setApproveSuccess(true);
+      console.log('Approval confirmed');
+      
+      // Step 2: Purchase asset
+      try {
+        const assetIdBytes32 = keccak256(stringToBytes(asset.assetId));
+        console.log('Purchasing asset...', assetIdBytes32);
         
-        // Step 2: Purchase asset
-        try {
-          const assetIdBytes32 = keccak256(toBytes(asset.assetId));
-          console.log('Purchasing asset...');
+        const purchaseHash = await walletClient.writeContract({
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: 'purchase',
+          args: [assetIdBytes32],
+          account: address,
+          chain: null,
+        });
+
+        setPurchaseHash(purchaseHash);
+        console.log('Purchase transaction:', purchaseHash);
+
+        // Wait for purchase confirmation
+        console.log('Waiting for purchase confirmation...');
+        await publicClient.waitForTransactionReceipt({ hash: purchaseHash });
+        setPurchaseSuccess(true);
+        console.log('Purchase confirmed');
+        
+        // Immediately verify and unlock using the txHash (x402 style verification)
+        // No need to wait for indexers or timeouts
+        setPurchasing(false);
+        checkAccess(purchaseHash);
           
-          const purchaseHash = await walletClient.writeContract({
-            address: CONTRACT_ADDRESS,
-            abi: CONTRACT_ABI,
-            functionName: 'purchase',
-            args: [assetIdBytes32],
-            account: address,
-            chain: null,
-          });
-
-          setPurchaseHash(purchaseHash);
-          console.log('Purchase transaction:', purchaseHash);
-
-          // Wait for confirmation
-          setTimeout(() => {
-            setPurchaseSuccess(true);
-            setPurchasing(false);
-            checkAccess();
-          }, 3000);
-        } catch (purchaseError) {
-          console.error('Purchase failed:', purchaseError);
-          alert('Purchase transaction failed. Please try again.');
-          setPurchasing(false);
-        }
-      }, 3000);
+      } catch (purchaseError) {
+        console.error('Purchase failed:', purchaseError);
+        alert('Purchase transaction failed. Please try again.');
+        setPurchasing(false);
+      }
     } catch (error) {
       console.error('Approval failed:', error);
       alert('USDC approval failed. Please try again.');
@@ -179,22 +188,108 @@ export function ViewAsset({ slug }: { slug: string }) {
     if (!address || !asset) return;
 
     try {
-      const response = await fetch(
-        `/api/download?assetId=${asset.assetId}&payer=${address}`
-      );
+      // Use Server-Side JIT Signing Flow (mode=direct)
+      // This ensures the asset is freshly signed with C2PA credentials including the purchase info
+      const downloadUrl = `/api/download?assetId=${asset.assetId}&payer=${address}&mode=direct`;
 
+      const response = await fetch(downloadUrl);
       if (!response.ok) {
-        throw new Error('Download failed');
+        let errorMessage = response.statusText;
+        try {
+          const data = await response.json();
+          if (data.error) errorMessage = data.error;
+        } catch (e) {
+          // Ignore JSON parse error
+        }
+        throw new Error(`Download failed: ${errorMessage}`);
       }
 
-      const data = await response.json();
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = asset.filename || `imgate-${asset.slug}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
 
-      // In production, implement browser-side decryption
-      // For now, just redirect to IPFS
-      window.open(data.ipfsUrl, '_blank');
+      // Verify C2PA on external site (optional user flow)
+      if (confirm('Download complete! Verify C2PA credentials on contentcredentials.org?')) {
+        window.open('https://contentcredentials.org/verify', '_blank');
+      }
+
     } catch (error) {
-      alert('Download failed. Make sure you have purchased this image.');
+      console.error('Download error:', error);
+      alert('Download failed. ' + (error as Error).message);
     }
+  };
+
+  const handleDownloadPreview = async () => {
+    if (!asset) return;
+    try {
+        // Fetch blob to force download (avoids opening in tab for cross-origin)
+        const url = `https://gateway.pinata.cloud/ipfs/${asset.previewCID}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Failed to fetch preview");
+        
+        const blob = await response.blob();
+        const blobUrl = window.URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = `preview-${asset.filename}`;
+        document.body.appendChild(a);
+        a.click();
+        
+        window.URL.revokeObjectURL(blobUrl);
+        document.body.removeChild(a);
+    } catch (e) {
+        console.error(e);
+        alert("Failed to download preview");
+    }
+  };
+
+  // Helper function for decryption
+  const decryptFile = async (encryptedData: ArrayBuffer, keyBase64: string): Promise<ArrayBuffer> => {
+    // Import encryption utils here or use Web Crypto API directly
+    const keyBytes = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+    const cryptoKey = await window.crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      "AES-GCM",
+      true,
+      ["decrypt"]
+    );
+
+    const data = new Uint8Array(encryptedData);
+    const salt = data.slice(0, 64); // Salt (64 bytes)
+    const iv = data.slice(64, 64 + 16); // IV (16 bytes)
+    const authTag = data.slice(64 + 16, 64 + 16 + 16); // Auth Tag (16 bytes)
+    const encryptedContent = data.slice(64 + 16 + 16); // Encrypted Content
+
+    // Note: Node.js crypto.createCipheriv handles auth tag differently than Web Crypto API.
+    // In Node.js (used in encryption.ts), authTag is appended or handled separately.
+    // If using Web Crypto API for decryption, we usually need the ciphertext to include the tag at the end.
+    // Our encryption.ts structure: Salt (64) + IV (16) + AuthTag (16) + Ciphertext
+    // Web Crypto expect: IV (param) + Ciphertext + Tag (appended)
+    
+    // Construct buffer for Web Crypto: Ciphertext + AuthTag
+    const dataToDecrypt = new Uint8Array(encryptedContent.length + authTag.length);
+    dataToDecrypt.set(encryptedContent);
+    dataToDecrypt.set(authTag, encryptedContent.length);
+
+    return await window.crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: iv,
+        tagLength: 128, // 16 bytes * 8
+      },
+      cryptoKey,
+      dataToDecrypt
+    );
   };
 
   if (loading) {
@@ -232,15 +327,27 @@ export function ViewAsset({ slug }: { slug: string }) {
       <main className="max-w-5xl mx-auto px-4 py-16">
         <div className="grid md:grid-cols-2 gap-8">
           {/* Left: Image Preview */}
-          <div>
+          <div className="flex flex-col">
             <img
               src={`https://gateway.pinata.cloud/ipfs/${asset.previewCID}`}
               alt={asset.filename}
               className="w-full rounded-lg shadow-lg"
             />
-            <p className="text-sm text-gray-500 mt-2 text-center">
-              Watermarked Preview - {asset.width}x{asset.height}px
-            </p>
+            <div className="flex justify-between items-center mt-3 px-1">
+                <p className="text-sm text-gray-500">
+                Watermarked Preview - {asset.width}x{asset.height}px
+                </p>
+                <button 
+                    onClick={handleDownloadPreview}
+                    className="text-indigo-600 hover:text-indigo-800 text-sm font-medium flex items-center gap-1"
+                    title="Download preview with embedded C2PA Paywall info"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M12 9.75v10.32m0 0L8.25 16.5m3.75 3.575 3.75-3.575M12 9.75V3" />
+                    </svg>
+                    Download Preview
+                </button>
+            </div>
           </div>
 
           {/* Right: Details & Purchase */}

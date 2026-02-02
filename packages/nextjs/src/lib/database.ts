@@ -8,6 +8,7 @@ export interface Asset {
   assetId: string;
   slug: string;
   creatorAddress: string;
+  paymentAddress?: string; // Payment recipient address (can differ from creator)
   originHash: string;
   previewCID: string; // IPFS CID for preview
   encryptedCID: string; // IPFS CID for encrypted original
@@ -21,6 +22,12 @@ export interface Asset {
   c2paSigningTime?: string;
   c2paClaims?: any;
   createdAt: number;
+  // Promotional metadata for AI-powered creator promotion
+  creatorName?: string;
+  twitterHandle?: string;
+  creatorBio?: string;
+  description?: string; // Image description for search
+  creatorAvatar?: string; // IPFS CID for creator avatar
 }
 
 export interface Purchase {
@@ -129,6 +136,42 @@ export async function getAssetsByCreator(creatorAddress: string): Promise<Asset[
   return await collection
     .find({ creatorAddress: { $regex: new RegExp(`^${creatorAddress}$`, "i") } })
     .toArray();
+}
+
+/**
+ * Search assets by query string (matches filename, creator name, bio, or tags)
+ */
+export async function searchAssets(query: string): Promise<{ assets: Asset[], isFallback: boolean }> {
+  const collection = await getAssetsCollection();
+  
+  // 1. If query is empty, return latest matching nothing (explore mode)
+  if (!query || query.trim() === '') {
+    const assets = await collection.find({}).sort({ createdAt: -1 }).limit(20).toArray();
+    return { assets, isFallback: false };
+  }
+  
+  // 2. Simplified Search: Only search description using AND logic for all terms
+  const terms = query.split(/\s+/).filter(t => t.length > 0);
+  const termRegexes = terms.map(t => new RegExp(t, "i"));
+
+  // Find assets where description contains ALL keywords
+  const assets = await collection.find({
+    $and: termRegexes.map(rx => ({ description: rx }))
+  }).limit(20).toArray();
+
+  if (assets.length > 0) return { assets, isFallback: false };
+
+  // 3. Fallback: Try looser OR search (match ANY term in description)
+  if (terms.length > 1) {
+    const looseAssets = await collection.find({
+       description: { $in: termRegexes }
+    }).limit(20).toArray();
+    
+    if (looseAssets.length > 0) return { assets: looseAssets, isFallback: false };
+  }
+
+  // 4. No matches found
+  return { assets: [], isFallback: false };
 }
 
 /**

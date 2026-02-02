@@ -41,7 +41,13 @@ export default function Home() {
               provenance verification, and gasless USDC payments on Base.
             </p>
 
-            <div className="flex justify-center gap-4 mb-16">
+            <div className="flex justify-center gap-4 mb-16 flex-wrap">
+              <Link
+                href="/ai-demo"
+                className="bg-black text-white px-8 py-3 rounded-lg font-semibold hover:bg-gray-800 transition shadow-xl ring-2 ring-indigo-500/50 flex items-center gap-2"
+              >
+                <span>✨</span> Try AI Agent
+              </Link>
               <Link
                 href="/upload"
                 className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition"

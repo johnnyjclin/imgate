@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { WalletButton } from '@/components/WalletButton';
 import { useWallet } from '@/hooks/useWallet';
-import { parseUnits, keccak256, toBytes } from 'viem';
+import { parseUnits, keccak256, stringToBytes } from 'viem';
 import Link from 'next/link';
 
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_IMGATE_CONTRACT_ADDRESS as `0x${string}`;
@@ -28,9 +28,25 @@ interface C2PAInfo {
   manifestPresent: boolean;
   title?: string;
   claimGenerator?: string;
+  claimGeneratorInfo?: {
+    name: string;
+    version?: string;
+  }[];
   signature?: {
     issuer?: string;
     time?: string;
+  };
+  actions?: {
+    action: string;
+    description?: string;
+    softwareAgent?: string | any;
+    when?: string;
+    parameters?: any;
+  }[];
+  generativeInfo?: {
+    software?: string;
+    type?: string; 
+    prompt?: string;
   };
   assertions?: Array<{
     label: string;
@@ -38,7 +54,12 @@ interface C2PAInfo {
   }>;
   ingredients?: Array<{
     title?: string;
+    format?: string;
     relationship?: string;
+    thumbnail?: {
+      contentType: string;
+      data: string;
+    };
   }>;
 }
 
@@ -55,6 +76,24 @@ export default function UploadPage() {
   const [registerHash, setRegisterHash] = useState<string | null>(null);
   const [txWaiting, setTxWaiting] = useState(false);
   const [txConfirmed, setTxConfirmed] = useState(false);
+  
+  // Promotional metadata state
+  const [creatorName, setCreatorName] = useState('');
+  const [twitterHandle, setTwitterHandle] = useState('');
+  const [creatorBio, setCreatorBio] = useState('');
+  const [description, setDescription] = useState(''); // New field for Image Description
+  const [paymentAddress, setPaymentAddress] = useState('');
+  
+  // Avatar upload state
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+
+  // Update payment address when wallet connects
+  useEffect(() => {
+    if (address && !paymentAddress) {
+      setPaymentAddress(address);
+    }
+  }, [address, paymentAddress]);
   
   // Track transaction confirmation status
   useEffect(() => {
@@ -158,6 +197,33 @@ export default function UploadPage() {
     }
   };
 
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      // Validate file type
+      if (!selectedFile.type.startsWith('image/')) {
+        setError('Please select a valid image file for avatar');
+        return;
+      }
+      
+      // Validate file size (max 5MB for avatar)
+      if (selectedFile.size > 5 * 1024 * 1024) {
+        setError('Avatar file too large (max 5MB)');
+        return;
+      }
+      
+      setAvatarFile(selectedFile);
+      setError(null);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setAvatarPreview(event.target?.result as string);
+      };
+      reader.readAsDataURL(selectedFile);
+    }
+  };
+
   const handleUpload = async () => {
     if (!file || !address) return;
 
@@ -168,12 +234,28 @@ export default function UploadPage() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('creatorAddress', address);
+      // Use explicit payment address, or fallback to connected wallet
+      formData.append('paymentAddress', paymentAddress || address);
       formData.append('priceUSDC', price);
 
       // Include C2PA data if available
       if (c2paInfo) {
         formData.append('c2paData', JSON.stringify(c2paInfo));
       }
+
+      // Include promotional metadata if provided
+      if (creatorName) formData.append('creatorName', creatorName);
+      if (twitterHandle) formData.append('twitterHandle', twitterHandle);
+      if (creatorBio) formData.append('creatorBio', creatorBio);
+      if (description) formData.append('description', description); // Add description to upload
+      
+      // Include avatar file if provided
+      if (avatarFile) formData.append('avatar', avatarFile);
+      
+      // We are using 'creatorBio' as the description field.
+      // If the user entered description, it should leverage this or a new field.
+      // Based on UI at line ~705, the field definition below is "Short Bio".
+      // We will add a "Description" field specifically for the Image.
 
       const response = await fetch('/api/upload', {
         method: 'POST',
@@ -187,10 +269,57 @@ export default function UploadPage() {
 
       const data = await response.json();
       setResult(data);
+      
+      // Automatically register on blockchain after successful upload
+      setUploading(false);
+      await handleAutoRegister(data);
     } catch (err) {
       setError((err as Error).message);
-    } finally {
       setUploading(false);
+    }
+  };
+
+  const handleAutoRegister = async (uploadResult: any) => {
+    if (!uploadResult || !CONTRACT_ADDRESS) return;
+
+    setRegistering(true);
+    setError(null);
+    setTxWaiting(false);
+
+    try {
+      const walletClient = getWalletClient();
+      const assetIdBytes32 = keccak256(stringToBytes(uploadResult.asset.assetId));
+      const priceInWei = parseUnits(price, 6);
+      
+      console.log('Auto-registering on blockchain...');
+      console.log('Asset ID (bytes32):', assetIdBytes32);
+      console.log('Price:', priceInWei.toString());
+
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'registerAsset',
+        args: [assetIdBytes32, priceInWei],
+        account: address,
+        chain: null,
+      });
+
+      setRegisterHash(hash);
+      setRegistering(false);
+      setTxWaiting(true);
+      console.log('Registration transaction initiated:', hash);
+
+      // Wait for confirmation
+      setTimeout(() => {
+        setTxConfirmed(true);
+        setTxWaiting(false);
+        console.log('Transaction confirmed!');
+      }, 5000);
+    } catch (error) {
+      console.error('Auto-registration failed:', error);
+      setError(`Blockchain registration failed: ${(error as Error).message}. Asset uploaded but not registered on-chain.`);
+      setRegistering(false);
+      setTxWaiting(false);
     }
   };
 
@@ -203,7 +332,7 @@ export default function UploadPage() {
 
     try {
       const walletClient = getWalletClient();
-      const assetIdBytes32 = keccak256(toBytes(result.asset.assetId));
+      const assetIdBytes32 = keccak256(stringToBytes(result.asset.assetId));
       const priceInWei = parseUnits(price, 6);
       
       console.log('Starting blockchain registration...');
@@ -319,265 +448,7 @@ export default function UploadPage() {
               {/* Price */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                
-
-              {/* C2PA Content Credentials */}
-              {c2paInfo && c2paInfo.manifestPresent && (
-                <div className="bg-green-50 border border-green-200 p-6 rounded-lg">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-2xl">✓</span>
-                    <h3 className="text-xl font-bold text-green-800">
-                      Content Credentials Detected
-                    </h3>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    {/* Asset Title */}
-                    {c2paInfo.title && (
-                      <div className="pb-3 border-b border-green-200">
-                        <h4 className="text-lg font-semibold text-gray-900">
-                          {c2paInfo.title}
-                        </h4>
-                      </div>
-                    )}
-                    
-                    {/* Signed By */}
-                    {c2paInfo.signature?.issuer && (
-                      <div>
-                        <div className="text-sm font-medium text-gray-500 mb-1">
-                          Issued by
-                        </div>
-                        <div className="text-base font-semibold text-gray-900">
-                          {c2paInfo.signature.issuer}
-                        </div>
-                        {c2paInfo.signature.time && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            {new Date(c2paInfo.signature.time).toLocaleString()}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    
-                    {/* Content Summary - Check for AI generation */}
-                    {c2paInfo.assertions && c2paInfo.assertions.some((a: any) => 
-                      a.label.includes('ai') || a.label.includes('generation')
-                    ) && (
-                      <div className="bg-blue-50 border border-blue-200 p-3 rounded">
-                        <div className="flex items-start gap-2">
-                          <span className="text-blue-600 text-lg">ⓘ</span>
-                          <div>
-                            <div className="font-medium text-blue-900 text-sm">
-                              Content Summary
-                            </div>
-                            <div className="text-blue-800 text-sm mt-1">
-                              This content was generated with an AI tool
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Process - App/Device Used */}
-                    {c2paInfo.claimGenerator && (
-                      <div>
-                        <div className="text-sm font-medium text-gray-500 mb-1">
-                          Process
-                        </div>
-                        <div className="bg-white border border-gray-200 p-3 rounded">
-                          <div className="text-xs text-gray-500 mb-1">
-                            App or device used
-                          </div>
-                          <div className="text-sm text-gray-900 font-medium">
-                            {c2paInfo.claimGenerator}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Assertions/Claims */}
-                    {c2paInfo.assertions && c2paInfo.assertions.length > 0 && (
-                      <div>
-                        <details className="group">
-                          <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900 flex items-center gap-2">
-                            <span className="transform transition-transform group-open:rotate-90">
-                              ▶
-                            </span>
-                            Claims ({c2paInfo.assertions.length})
-                          </summary>
-                          <div className="mt-2 ml-6 space-y-2">
-                            {c2paInfo.assertions.map((assertion: any, idx: number) => (
-                              <div key={idx} className="text-xs bg-gray-50 p-3 rounded border border-gray-200">
-                                <div className="font-semibold text-gray-800 mb-2">
-                                  {assertion.label}
-                                </div>
-                                {assertion.data && (
-                                  <div className="text-gray-600 ml-2">
-                                    {/* Actions */}
-                                    {assertion.label.includes('actions') && Array.isArray(assertion.data) && (
-                                      <div className="space-y-1">
-                                        {assertion.data.map((action: any, i: number) => (
-                                          <div key={i} className="pl-2 border-l-2 border-blue-300">
-                                            <div className="font-medium">{action.action || 'Unknown action'}</div>
-                                            {action.softwareAgent && (
-                                              <div className="text-xs text-gray-500">Tool: {action.softwareAgent}</div>
-                                            )}
-                                            {action.when && (
-                                              <div className="text-xs text-gray-500">
-                                                {new Date(action.when).toLocaleString()}
-                                              </div>
-                                            )}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                    
-                                    {/* Creative Work */}
-                                    {assertion.label.includes('CreativeWork') && typeof assertion.data === 'object' && (
-                                      <div className="space-y-1">
-                                        {assertion.data.author && (
-                                          <div><strong>Author:</strong> {JSON.stringify(assertion.data.author)}</div>
-                                        )}
-                                        {assertion.data.datePublished && (
-                                          <div><strong>Published:</strong> {assertion.data.datePublished}</div>
-                                        )}
-                                      </div>
-                                    )}
-                                    
-                                    {/* Hash */}
-                                    {assertion.label.includes('hash') && (
-                                      <div className="font-mono text-xs break-all">
-                                        {typeof assertion.data === 'string' 
-                                          ? assertion.data 
-                                          : JSON.stringify(assertion.data, null, 2)}
-                                      </div>
-                                    )}
-                                    
-                                    {/* Generic display */}
-                                    {!assertion.label.includes('actions') && 
-                                     !assertion.label.includes('CreativeWork') &&
-                                     !assertion.label.includes('hash') && (
-                                      <pre className="text-xs overflow-auto max-h-32 bg-white p-2 rounded">
-                                        {typeof assertion.data === 'string' 
-                                          ? assertion.data 
-                                          : JSON.stringify(assertion.data, null, 2)}
-                                      </pre>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      </div>
-                    )}
-                    
-                    {/* Source Materials */}
-                    {c2paInfo.ingredients && c2paInfo.ingredients.length > 0 && (
-                      <div>
-                        <div className="text-sm font-medium text-gray-500 mb-2">
-                          Source Materials
-                        </div>
-                        <div className="space-y-1">
-                          {c2paInfo.ingredients.map((ing: any, idx: number) => (
-                            <div key={idx} className="text-sm text-gray-700 bg-gray-50 p-2 rounded">
-                              • {ing.title || `Source ${idx + 1}`}
-                              {ing.relationship && (
-                                <span className="text-xs text-gray-500 ml-2">
-                                  ({ing.relationship})
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Verification Link */}
-                    <div className="pt-3 border-t border-green-200">
-                      <a
-                        href="https://verify.contentauthenticity.org"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-green-700 hover:text-green-800 underline"
-                      >
-                        Verify at contentauthenticity.org →
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {c2paInfo && !c2paInfo.manifestPresent && (
-                <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xl">ℹ️</span>
-                    <p className="text-sm text-gray-600">
-                      No C2PA content credentials found in this image
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Manual Claim Entry */}
-              {addingClaim && (
-                <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg">
-                  <h3 className="text-lg font-semibold text-blue-800 mb-3">
-                    Add Content Provenance (Optional)
-                  </h3>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Creator/Artist Name
-                      </label>
-                      <input
-                        type="text"
-                        value={claimCreator}
-                        onChange={(e) => setClaimCreator(e.target.value)}
-                        placeholder="Your name or artist name"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Created With (Tool/Camera)
-                      </label>
-                      <input
-                        type="text"
-                        value={claimTool}
-                        onChange={(e) => setClaimTool(e.target.value)}
-                        placeholder="e.g., Photoshop, Canon EOS R5, Midjourney"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Notes/Description
-                      </label>
-                      <textarea
-                        value={claimNotes}
-                        onChange={(e) => setClaimNotes(e.target.value)}
-                        placeholder="Brief description of the work or creation process"
-                        rows={3}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleAddManualClaim}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
-                      >
-                        Add Provenance Info
-                      </button>
-                      <button
-                        onClick={() => setAddingClaim(false)}
-                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300"
-                      >
-                        Skip
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}  Price (USDC)
+                  Price (USDC)
                 </label>
                 <input
                   type="number"
@@ -589,6 +460,147 @@ export default function UploadPage() {
                 />
                 <p className="text-xs text-gray-500 mt-1">
                   You receive 95% ({(parseFloat(price) * 0.95).toFixed(2)} USDC)
+                </p>
+              </div>
+
+              {/* Creator Promotional Information */}
+              <div className="border-t border-gray-200 pt-6">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    Creator Promotional Information
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    Optional: Help AI assistants discover and promote your work by embedding your social media information in the image metadata.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {/* Avatar Upload */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Profile Avatar
+                    </label>
+                    <div className="flex items-start gap-4">
+                      {/* Avatar Preview */}
+                      {avatarPreview ? (
+                        <div className="flex-shrink-0">
+                          <img
+                            src={avatarPreview}
+                            alt="Avatar preview"
+                            className="w-20 h-20 rounded-full object-cover border-2 border-gray-300"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex-shrink-0 w-20 h-20 rounded-full bg-gray-200 flex items-center justify-center border-2 border-gray-300">
+                          <svg className="w-10 h-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                          </svg>
+                        </div>
+                      )}
+                      
+                      {/* File Input */}
+                      <div className="flex-1">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleAvatarChange}
+                          className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Upload your profile picture (max 5MB, JPG/PNG)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Creator Name */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Your Name or Brand
+                    </label>
+                    <input
+                      type="text"
+                      value={creatorName}
+                      onChange={(e) => setCreatorName(e.target.value)}
+                      placeholder="e.g., John Smith"
+                      className="block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  {/* Twitter Handle */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      X (Twitter) Handle
+                    </label>
+                    <div className="flex">
+                      <span className="inline-flex items-center px-3 bg-gray-100 border border-r-0 border-gray-300 rounded-l-lg text-gray-600">
+                        @
+                      </span>
+                      <input
+                        type="text"
+                        value={twitterHandle}
+                        onChange={(e) => setTwitterHandle(e.target.value)}
+                        placeholder="username"
+                        className="block w-full px-4 py-2 border border-gray-300 rounded-r-lg focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Creator Bio */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                       Short Bio (Creator)
+                    </label>
+                    <textarea
+                      value={creatorBio}
+                      onChange={(e) => setCreatorBio(e.target.value)}
+                      placeholder="Brief description of your work or specialization"
+                      rows={2}
+                      className="block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  {/* Image Description (SEO/MCP) */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Image Description / Keywords 
+                    </label>
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      placeholder="Describe the image contents for AI search (e.g. 'A futuristic city at sunset with flying cars')..."
+                      rows={3}
+                      className="block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      This description is indexed for the 'search_assets' tool.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Address Input */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Payment Recipient Address (Wallet)
+                </label>
+                <div className="relative rounded-md shadow-sm">
+                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                     <span className="text-gray-500 sm:text-sm">0x</span>
+                   </div>
+                   <input
+                    type="text"
+                    value={paymentAddress?.replace(/^0x/, '') || ''}
+                    onChange={(e) => {
+                        const val = e.target.value.replace(/[^a-fA-F0-9]/g, '');
+                        setPaymentAddress(val ? `0x${val}` : '');
+                    }}
+                    placeholder="Recipient wallet address (defaults to connected wallet)"
+                    className="block w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  This address will be embedded in the image metadata for receiving payments (x402).
                 </p>
               </div>
 
@@ -616,7 +628,7 @@ export default function UploadPage() {
                   </p>
                   {registering && !registerHash && (
                     <div className="mb-2 text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 p-3 rounded">
-                      🔐 Please approve the transaction in your wallet...
+                      🔐 Registering on blockchain... Please approve the transaction in your wallet.
                     </div>
                   )}
                   {registerHash && txWaiting && !txConfirmed && (
@@ -630,17 +642,17 @@ export default function UploadPage() {
                       </div>
                     </div>
                   )}
-                  {!txWaiting && !txConfirmed && (
+                  {!registering && !registerHash && !txWaiting && !txConfirmed && (
                     <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
                       <p className="text-sm text-yellow-800 mb-2">
-                        Asset uploaded! Click below to register on blockchain.
+                        ⚠️ Auto-registration failed or was cancelled. Click below to retry.
                       </p>
                       <button
                         onClick={handleManualRegister}
                         disabled={registering}
                         className="text-sm bg-yellow-600 text-white px-3 py-1.5 rounded hover:bg-yellow-700 transition disabled:opacity-50"
                       >
-                        Register on Blockchain
+                        Retry Blockchain Registration
                       </button>
                     </div>
                   )}

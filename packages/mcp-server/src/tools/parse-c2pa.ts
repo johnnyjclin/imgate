@@ -58,10 +58,63 @@ export async function parseC2PA(
 
     // Display claims if available
     if (asset.c2paClaims) {
-      result += `\n**Manifest Claims:**\n`;
-      result += `\`\`\`json\n`;
-      result += JSON.stringify(asset.c2paClaims, null, 2);
-      result += `\n\`\`\`\n`;
+      result += `\n**Manifest Details:**\n`;
+      
+      const claims = asset.c2paClaims;
+      
+      // Handle new structured object vs old array
+      const assertions = Array.isArray(claims) ? claims : claims.assertions || [];
+      const actions = !Array.isArray(claims) ? claims.actions : [];
+      const genInfo = !Array.isArray(claims) ? claims.generativeInfo : undefined;
+
+      // 1. Generative AI Info
+      if (genInfo) {
+         result += `\n✨ **Generative AI**\n`;
+         result += `- Software: ${genInfo.software || 'AI Tool'}\n`;
+         if (genInfo.prompt) result += `- Prompt: "${genInfo.prompt}"\n`;
+      }
+
+      // 2. Actions
+      if (actions && actions.length > 0) {
+         result += `\n🛠️ **Edits & Activity**\n`;
+         actions.forEach((action: any) => {
+            const agent = typeof action.softwareAgent === 'string' 
+                ? action.softwareAgent 
+                : action.softwareAgent?.name;
+            result += `- ${action.description || action.action} ${agent ? `(via ${agent})` : ''}\n`;
+         });
+      }
+
+      // 3. Creative Work (Promotional)
+      let hasCreativeWork = false;
+      if (assertions) {
+         assertions.forEach((claim: any) => {
+            if (claim.label === 'stds.schema-org.CreativeWork') {
+               hasCreativeWork = true;
+               const data = claim.data;
+               result += `\n🎨 **Creative Work (Promotional Metadata)**\n`;
+               if (data.author && data.author.name) {
+                  result += `- Artist: ${data.author.name}\n`;
+               }
+               if (data.sameAs) {
+                  result += `- Social: ${data.sameAs}\n`;
+               }
+               if (data.description) {
+                  result += `- Description: ${data.description}\n`;
+               }
+            }
+         });
+      }
+
+      // Fallback: If we haven't printed the specific sections above (and it's not the old array format which would be dumped),
+      // we can dump the rest or just leave it. 
+      // If it WAS an array (old data), we should still verify if we printed it.
+      
+      if (!hasCreativeWork && !genInfo && (!actions || actions.length === 0)) {
+         result += `\`\`\`json\n`;
+         result += JSON.stringify(claims, null, 2);
+         result += `\n\`\`\`\n`;
+      }
     }
 
     // Additional blockchain provenance

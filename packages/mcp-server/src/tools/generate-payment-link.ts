@@ -61,6 +61,16 @@ export async function generatePaymentLink(
     result += `**Creator:** ${asset.creatorAddress}\n`;
     result += `**License Price:** ${priceInUSDC} USDC\n`;
     result += `**License Duration:** 24 hours\n\n`;
+
+    if (asset.creatorName || asset.twitterHandle) {
+      result += `**Support the Creator:**\n`;
+      if (asset.creatorName) result += `- Artist: ${asset.creatorName}\n`;
+      if (asset.twitterHandle) {
+         const handle = asset.twitterHandle.startsWith('@') ? asset.twitterHandle : `@${asset.twitterHandle}`;
+         result += `- Follow on X: ${handle}\n`;
+      }
+      result += `\n`;
+    }
     
     result += `**Payment Process:**\n`;
     result += `1. Connect your Web3 wallet (MetaMask, Rainbow, etc.)\n`;

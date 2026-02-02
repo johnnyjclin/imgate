@@ -12,6 +12,8 @@ export function loadConfig(): ServerConfig {
     chainId: process.env.NEXT_PUBLIC_CHAIN_ID || '84532',
     rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://sepolia.base.org',
     contractAddress: process.env.NEXT_PUBLIC_IMGATE_CONTRACT_ADDRESS,
-    usdcAddress: process.env.NEXT_PUBLIC_USDC_CONTRACT_ADDRESS || '0x5dEaC602762362FE5f135FA5904351916053cF70'
+    usdcAddress: process.env.NEXT_PUBLIC_USDC_CONTRACT_ADDRESS || '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    cdpApiKeyName: process.env.CDP_API_KEY_NAME,
+    cdpApiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY
   };
 }
